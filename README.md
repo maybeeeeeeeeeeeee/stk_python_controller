@@ -10,6 +10,21 @@ bonbonne à gaz). Il constitue le canal de contrôle **mains libres** :
 accélération, tir et nitro pilotés par le visage et la voix, en
 complément des commandes physiques gérées par l'Arduino.
 
+## Cette branche
+
+En plus du module de base, elle apporte deux choses :
+
+| Ajout | À quoi ça sert |
+|---|---|
+| **Serveur d'entrée analogique** — `STK_input_server_v2.py` (Linux, repris de `performance`) et `STK_input_server_win.py` (Windows, ViGEmBus) | la direction devient continue : le client envoie `STEER:<-1..1>`, le serveur l'applique à l'axe d'une manette virtuelle, au lieu d'enfoncer une flèche |
+| **Mode collaboratif** — [`collaboratif/`](collaboratif/README.md) | deux ou trois personnes devant une seule webcam, personne ne peut conduire seul |
+
+Sous Windows, [`lancer.ps1`](lancer.ps1) ouvre le serveur et le mode dans deux
+fenêtres (`STK_input_server_v2.py` a besoin de `/dev/uinput`, il ne tourne que
+sous Linux).
+
+---
+
 ## Sommaire
 
 - [Fonctionnement](#fonctionnement)

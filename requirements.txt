@@ -4,3 +4,11 @@ pynput
 vosk
 sounddevice
 numpy
+
+# --- serveur d'entree analogique (STK_input_server_v2 / _win) ---
+# La direction passe par un axe de manette virtuelle plutot que par les
+# fleches : c'est ce qui la rend continue. La facon de creer cette manette
+# depend du systeme.
+evdev ; sys_platform == "linux"      # manette via /dev/uinput
+vgamepad ; sys_platform == "win32"   # manette via ViGEmBus (pilote a part)
+keyboard ; sys_platform == "win32"   # touches, cote Windows
