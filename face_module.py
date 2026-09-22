@@ -1,16 +1,12 @@
 """
-Module "visage" : webcam + Mediapipe Face Landmarker.
+face_module.py — Webcam + Mediapipe Face Landmarker for SuperTuxKart.
 
-Détecte :
-- le sourire (continu)          -> Accelerate
-- la bouche grande ouverte      -> Fire (impulsion)
-- les sourcils levés (option)   -> Turbo (impulsion)
-- un clin d'œil gauche/droit    -> Left/Right (continu, assistance)
-- la tête tournée               -> Look back (continu)
-- un hochement de tête bref     -> Rescue (impulsion)
+Detects ONLY:
+  - Raised eyebrows       -> Look Back (continuous: P_LOOKBACK / R_LOOKBACK)
+  - Lateral head tilt     -> Drift     (continuous: P_SKIDDING / R_SKIDDING)
+  - Downward head nod     -> Rescue    (impulse: RESCUE)
 
-Lance ce module dans un thread séparé, il ne fait qu'appeler les méthodes
-du KeyboardController partagé.
+Sends commands via UDP (send_fn) to STK_input_server_v2.
 """
 
 import math
@@ -27,37 +23,41 @@ import config
 
 
 def _blendshape_dict(result) -> dict:
-    """Transforme la sortie brute de Mediapipe en dict {nom: score}."""
+    """Converts raw blendshape output into a {name: score} dict."""
     if not result.face_blendshapes:
         return {}
     return {c.category_name: c.score for c in result.face_blendshapes[0]}
 
 
-def _yaw_pitch_from_matrix(matrix) -> tuple[float, float]:
+def _decompose_head_pose(matrix) -> tuple[float, float, float]:
     """
-    Extrait yaw/pitch (en degrés) approximatifs à partir de la matrice de
-    transformation faciale renvoyée par Mediapipe.
-
-    Décomposition heuristique, suffisante pour du seuillage. Si les valeurs
-    te paraissent inversées en testant (DEBUG_WINDOW=True), inverse le
-    signe correspondant plus bas.
+    Decomposes the 4x4 Mediapipe transformation matrix into Euler angles (in degrees):
+      - pitch: rotation around X axis (vertical nod, chin moves down/up)
+      - yaw:   rotation around Y axis (turn left/right)
+      - roll:  rotation around Z axis (lateral tilt, ear towards shoulder)
     """
     r = np.array(matrix).reshape(4, 4)[:3, :3]
-    pitch = math.degrees(math.atan2(-r[2, 0], math.sqrt(r[0, 0] ** 2 + r[1, 0] ** 2)))
-    yaw = math.degrees(math.atan2(r[1, 0], r[0, 0]))
-    return yaw, pitch
+    angles, _, _, _, _, _ = cv2.RQDecomp3x3(r)
+    pitch = float(angles[0])
+    yaw   = float(angles[1])
+    roll  = float(angles[2])
+    return pitch, yaw, roll
 
 
 class _NodDetector:
-    """Détecte un hochement de tête bref: le pitch descend puis remonte vite."""
+    """Detects a brief downward head nod: pitch drops past threshold and returns quickly."""
 
     def __init__(self, dip_threshold_deg: float, max_duration_s: float):
         self.dip_threshold_deg = dip_threshold_deg
         self.max_duration_s = max_duration_s
         self._dip_start = None
 
+    def reset(self):
+        """Cancels any ongoing nod detection."""
+        self._dip_start = None
+
     def update(self, pitch_deg: float) -> bool:
-        """Retourne True au moment exact où un hochement complet est détecté."""
+        """Returns True at the exact moment a complete nod is detected."""
         now = time.monotonic()
         if pitch_deg < -self.dip_threshold_deg:
             if self._dip_start is None:
@@ -72,10 +72,13 @@ class _NodDetector:
 
 
 class FaceWorker(threading.Thread):
-    def __init__(self, controller):
+    def __init__(self, send_fn):
         super().__init__(daemon=True)
-        self._controller = controller
+        self._send_fn = send_fn
         self._stop_event = threading.Event()
+        self._lookback_active = False       # State to avoid spamming P_LOOKBACK
+        self._drift_active = False          # State to avoid spamming P_SKIDDING
+        self._last_rescue_time = 0.0        # Cooldown for rescue
 
     def stop(self):
         self._stop_event.set()
@@ -109,78 +112,94 @@ class FaceWorker(threading.Thread):
                 timestamp_ms = int((time.monotonic() - start_time) * 1000)
                 result = landmarker.detect_for_video(mp_image, timestamp_ms)
 
+                # 1. Look Back via eyebrows
                 shapes = _blendshape_dict(result)
                 if shapes:
-                    self._process_expressions(shapes)
+                    self._process_look_back_eyebrows(shapes)
 
+                # 2. Drift (lateral tilt) and Rescue (vertical nod)
+                pitch, roll = 0.0, 0.0
                 if result.facial_transformation_matrixes:
-                    yaw, pitch = _yaw_pitch_from_matrix(
-                        result.facial_transformation_matrixes[0]
-                    )
-                    self._process_head_pose(yaw, pitch, nod_detector)
+                    pitch, _, roll = _decompose_head_pose(result.facial_transformation_matrixes[0])
+                    self._process_head_pose(pitch, roll, nod_detector)
 
                 if config.DEBUG_WINDOW:
-                    self._draw_debug(frame, shapes)
+                    self._draw_debug(frame, shapes, pitch, roll)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
         finally:
+            # Ensure look_back and drift keys are released upon exit
+            if self._lookback_active:
+                self._send_fn("R_LOOKBACK")
+                self._lookback_active = False
+            if self._drift_active:
+                self._send_fn("R_SKIDDING")
+                self._drift_active = False
             cap.release()
             if config.DEBUG_WINDOW:
                 cv2.destroyAllWindows()
 
-    # -- Traitement des expressions -----------------------------------------------------
-    def _process_expressions(self, shapes: dict):
-        smile = (shapes.get("mouthSmileLeft", 0) + shapes.get("mouthSmileRight", 0)) / 2
-        active = smile > config.SMILE_ENGAGE
-        inactive = smile < config.SMILE_RELEASE
-        if active:
-            self._controller.set_continuous("accelerate", "face_smile", True)
-        elif inactive:
-            self._controller.set_continuous("accelerate", "face_smile", False)
+    def _process_look_back_eyebrows(self, shapes: dict):
+        """Detects raised eyebrows -> Look Back."""
+        outer = (shapes.get("browOuterUpLeft", 0.0) + shapes.get("browOuterUpRight", 0.0)) / 2.0
+        inner = shapes.get("browInnerUp", 0.0)
+        brow = max(outer, inner)
 
-        if shapes.get("jawOpen", 0) > config.JAW_OPEN_THRESHOLD:
-            self._controller.pulse("fire", config.JAW_OPEN_COOLDOWN_S)
+        if brow > config.EYEBROW_ENGAGE and not self._lookback_active:
+            self._send_fn("P_LOOKBACK")
+            self._lookback_active = True
+            print(f"[face] Look Back ACTIVATED (eyebrows: {brow:.2f})")
+        elif brow < config.EYEBROW_RELEASE and self._lookback_active:
+            self._send_fn("R_LOOKBACK")
+            self._lookback_active = False
+            print("[face] Look Back DEACTIVATED")
 
-        if config.EYEBROW_ENABLED:
-            brow = (
-                shapes.get("browOuterUpLeft", 0) + shapes.get("browOuterUpRight", 0)
-            ) / 2
-            if brow > config.EYEBROW_THRESHOLD:
-                self._controller.pulse("turbo", config.EYEBROW_COOLDOWN_S)
+    def _process_head_pose(self, pitch: float, roll: float, nod_detector: _NodDetector):
+        """
+        Processes 3D head orientation:
+          - Roll (lateral tilt / ear to shoulder) -> Drift
+          - Pitch (vertical downward nod and return) -> Rescue
+        """
+        abs_roll = abs(roll)
 
-        blink_l = shapes.get("eyeBlinkLeft", 0)
-        blink_r = shapes.get("eyeBlinkRight", 0)
+        # 1. Drift via lateral tilt
+        if abs_roll > config.DRIFT_ROLL_ENGAGE and not self._drift_active:
+            self._send_fn("P_SKIDDING")
+            self._drift_active = True
+            side = "right" if roll > 0 else "left"
+            print(f"[face] Drift ACTIVATED ({side} tilt: {abs_roll:.1f}°)")
+        elif abs_roll < config.DRIFT_ROLL_RELEASE and self._drift_active:
+            self._send_fn("R_SKIDDING")
+            self._drift_active = False
+            print("[face] Drift DEACTIVATED")
 
-        wink_left = blink_l > config.WINK_LEFT_ENGAGE and blink_r < config.WINK_LEFT_RELEASE_OTHER_EYE
-        wink_right = blink_r > config.WINK_RIGHT_ENGAGE and blink_l < config.WINK_RIGHT_RELEASE_OTHER_EYE
+        # 2. Rescue via quick vertical nod
+        # Safety lock: while drifting (head tilted), rescue detection is disabled
+        if self._drift_active:
+            nod_detector.reset()
+        else:
+            if nod_detector.update(pitch):
+                now = time.monotonic()
+                if now - self._last_rescue_time >= config.RESCUE_COOLDOWN_S:
+                    self._last_rescue_time = now
+                    self._send_fn("RESCUE")
+                    print(f"[face] RESCUE sent (vertical head nod: {pitch:.1f}°)")
 
-        self._controller.set_continuous("left", "face_wink", wink_left)
-        self._controller.set_continuous("right", "face_wink", wink_right)
+    def _draw_debug(self, frame, shapes: dict, pitch: float, roll: float):
+        outer = (shapes.get("browOuterUpLeft", 0.0) + shapes.get("browOuterUpRight", 0.0)) / 2.0
+        inner = shapes.get("browInnerUp", 0.0)
+        brow = max(outer, inner)
 
-    # -- Traitement de l'orientation de la tête ------------------------------------------
-    def _process_head_pose(self, yaw_deg: float, pitch_deg: float, nod_detector: _NodDetector):
-        turned = abs(yaw_deg) > config.LOOK_BACK_YAW_THRESHOLD_DEG
-        self._controller.set_continuous("look_back", "head_yaw", turned)
+        lb_text = "LOOK_BACK: ON" if self._lookback_active else "LOOK_BACK: off"
+        lb_color = (0, 0, 255) if self._lookback_active else (0, 255, 0)
 
-        if nod_detector.update(pitch_deg):
-            self._controller.pulse("rescue", config.RESCUE_COOLDOWN_S)
+        drift_text = "DRIFT: ON" if self._drift_active else "DRIFT: off"
+        drift_color = (0, 0, 255) if self._drift_active else (0, 255, 0)
 
-    # -- Fenêtre de debug pour la calibration --------------------------------------------
-    def _draw_debug(self, frame, shapes: dict):
-        y = 20
-        for name in (
-            "mouthSmileLeft",
-            "mouthSmileRight",
-            "jawOpen",
-            "browOuterUpLeft",
-            "browOuterUpRight",
-            "eyeBlinkLeft",
-            "eyeBlinkRight",
-        ):
-            value = shapes.get(name, 0.0)
-            cv2.putText(
-                frame, f"{name}: {value:.2f}", (10, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1,
-            )
-            y += 18
-        cv2.imshow("Debug visage (q pour quitter)", frame)
+        cv2.putText(frame, f"Eyebrows:       {brow:.2f} | {lb_text}", (10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, lb_color, 2)
+        cv2.putText(frame, f"Tilt (Roll Z):  {roll:+5.1f}* | {drift_text}", (10, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, drift_color, 2)
+        cv2.putText(frame, f"Vertical (X):   {pitch:+5.1f}* | Downward NOD = Rescue", (10, 75),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 0), 2)
+        cv2.imshow("Face Module (q to exit)", frame)

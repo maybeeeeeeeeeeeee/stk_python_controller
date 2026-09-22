@@ -1,0 +1,29 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Large Machine Learning models (downloaded separately, see README.md)
+models/*
+!models/.gitkeep
+
+# Experiments and temporary tests
+experimento/
+
+# Planning and agent prompt files
+PLANO_INTEGRACAO.md
+PROMPT_MIGRACAO_ANALOGICO.md
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~

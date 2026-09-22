@@ -1,9 +1,8 @@
 """
-Point d'entrée du module "collaboratif" (visage + tête/corps + voix).
+Entry point for the legacy module (face + head + voice).
 
-Lance ce script pendant que SuperTuxKart est ouvert et au premier plan.
-Ctrl+C dans le terminal (ou 'q' dans la fenêtre de debug) pour arrêter
-proprement.
+Run this script while SuperTuxKart is open and in foreground.
+Ctrl+C in terminal (or 'q' in debug window) to stop cleanly.
 """
 
 import time
@@ -18,7 +17,7 @@ def main():
     face_worker = FaceWorker(controller)
     voice_worker = VoiceWorker(controller)
 
-    print("Démarrage du visage + de la voix... (Ctrl+C pour arrêter)")
+    print("Starting face + voice modules... (Ctrl+C to stop)")
     face_worker.start()
     voice_worker.start()
 
@@ -26,14 +25,14 @@ def main():
         while face_worker.is_alive():
             time.sleep(0.2)
     except KeyboardInterrupt:
-        print("\nArrêt demandé...")
+        print("\nShutdown requested...")
     finally:
         face_worker.stop()
         voice_worker.stop()
         face_worker.join(timeout=2)
         voice_worker.join(timeout=2)
         controller.release_all()
-        print("Arrêt propre, aucune touche laissée enfoncée.")
+        print("Clean shutdown, no keys left pressed.")
 
 
 if __name__ == "__main__":

@@ -1,15 +1,14 @@
 """
-Contrôleur clavier partagé entre les modules visage et voix.
+Shared keyboard controller between face and voice modules (legacy).
 
-Deux types d'actions :
-- "continues" (ex: accelerate, look_back) : une source dit "actif" ou
-  "inactif", la touche est maintenue enfoncée tant qu'au moins une source
-  la demande (logique OR).
-- "impulsions" (ex: fire, turbo, rescue) : un press+release bref, avec un
-  cooldown par action pour éviter le spam.
+Two types of actions:
+- "continuous" (e.g. accelerate, look_back): a source signals "active" or
+  "inactive", the key is held down as long as at least one source requests it (OR logic).
+- "impulses" (e.g. fire, turbo, rescue): a brief press+release, with a
+  per-action cooldown to prevent spam.
 
-Thread-safe : plusieurs threads (visage, voix) peuvent appeler ce
-contrôleur en même temps sans se marcher dessus.
+Thread-safe: multiple threads (face, voice) can call this controller
+concurrently without race conditions.
 """
 
 import threading
@@ -24,14 +23,14 @@ class KeyboardController:
     def __init__(self):
         self._keyboard = Controller()
         self._lock = threading.Lock()
-        # pour chaque action continue, l'ensemble des sources qui la demandent
+        # For each continuous action, the set of requesting sources
         self._active_sources = {}          # action -> set(source_name)
-        self._currently_pressed = set()    # actions dont la touche est physiquement enfoncée
-        self._last_pulse_time = {}         # action -> timestamp du dernier déclenchement
+        self._currently_pressed = set()    # actions whose key is physically pressed down
+        self._last_pulse_time = {}         # action -> timestamp of last trigger
 
-    # -- Actions continues (maintenues) -------------------------------------------------
+    # -- Continuous (held) actions -------------------------------------------------
     def set_continuous(self, action: str, source: str, active: bool):
-        """Une source (ex: 'face_smile') indique si elle demande l'action ou non."""
+        """A source (e.g. 'face_smile') indicates whether it requests the action."""
         if action not in KEY_MAP:
             return
         with self._lock:
@@ -51,26 +50,25 @@ class KeyboardController:
                 self._keyboard.release(KEY_MAP[action])
                 self._currently_pressed.discard(action)
 
-    # -- Actions ponctuelles (impulsions) -------------------------------------------------
+    # -- One-time (impulse) actions -------------------------------------------------
     def pulse(self, action: str, cooldown_s: float):
-        """Déclenche un press+release bref, en respectant un cooldown par action."""
+        """Triggers a brief press+release, respecting a per-action cooldown."""
         if action not in KEY_MAP:
             return
         now = time.monotonic()
         with self._lock:
             last = self._last_pulse_time.get(action, 0.0)
             if now - last < cooldown_s:
-                return  # trop tôt, on ignore (anti-spam)
+                return  # Too early, ignore (anti-spam)
             self._last_pulse_time[action] = now
 
-        # le press/release réel se fait hors du verrou pour ne pas bloquer
-        # les autres threads pendant le petit délai de maintien
+        # Actual press/release is done outside the lock to avoid blocking other threads
         key = KEY_MAP[action]
         self._keyboard.press(key)
         threading.Timer(PULSE_HOLD_S, lambda: self._keyboard.release(key)).start()
 
     def release_all(self):
-        """À appeler en sortie de programme pour ne laisser aucune touche coincée."""
+        """Call on program exit so no keys remain stuck."""
         with self._lock:
             for action in list(self._currently_pressed):
                 self._keyboard.release(KEY_MAP[action])

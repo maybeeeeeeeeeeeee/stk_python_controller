@@ -4,3 +4,5 @@ pynput
 vosk
 sounddevice
 numpy
+oscpy
+evdev
