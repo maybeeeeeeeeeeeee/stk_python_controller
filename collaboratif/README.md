@@ -14,14 +14,22 @@ coordonnent.
    à gauche (provisoire) à droite
 ```
 
-La direction passe par le **serveur d'entrée analogique**
-([`STK_input_server_v2.py`](../STK_input_server_v2.py)), repris tel quel de la
-branche `performance` : au lieu d'enfoncer une flèche, on lui envoie
-`STEER:<-1..1>` et il l'applique à l'axe d'une manette virtuelle. C'est ce qui
-rend la direction continue au lieu de basculer d'un bord à l'autre.
+Il réutilise le serveur d'entrée du mode performance
+([`STK_input_server_v2.py`](../STK_input_server_v2.py)) sans rien y changer :
+même port, même vocabulaire, même `STEER:` analogique.
 
-C'est la **seule** chose reprise du mode performance : le reste de ce projet est
-indépendant.
+Deux ajouts tournent en même temps que la direction, sans rien y changer non
+plus :
+
+- **téléphone secoué -> TURBO** : le téléphone est fixé au-dessus de la
+  chaise, MultiSense OSC diffuse son accéléromètre par OSC (même app, même
+  port 8000 que le volant du volet performance). Voir [`telephone.py`](telephone.py).
+- **6 mains levées -> sauvetage collectif (RESCUE)** : les 3 joueurs lèvent
+  les deux mains en même temps, tenu un court instant. Réutilise la MÊME
+  webcam que la direction. Voir [`mains_levees.py`](mains_levees.py).
+
+Les deux suivent la même règle que le pilotage : **personne ne peut le faire
+seul.**
 
 ---
 
@@ -60,9 +68,11 @@ une seule fonction à remplacer, avec quatre pistes listées dans son en-tête.
 
 ## Lancer
 
-Le modèle Mediapipe est le même que celui du mode performance
-(`models/face_landmarker.task`, voir le [README racine](../README.md)). Rien de
-plus à installer.
+Le modèle Mediapipe (visages) est le même que celui du mode performance
+(`models/face_landmarker.task`, voir le [README racine](../README.md)). Le
+sauvetage collectif a besoin d'un second modèle, `models/pose_landmarker_lite.task`
+(voir la section [Sauvetage collectif](#sauvetage-collectif--6-mains-levées)
+ci-dessous pour le lien de téléchargement).
 
 Deux terminaux :
 
@@ -70,7 +80,7 @@ Deux terminaux :
 # Terminal 1 — le serveur d'entrée (celui du mode performance, inchangé)
 python3 STK_input_server_v2.py -d
 
-# Terminal 2 — le mode collaboratif
+# Terminal 2 — le mode collaboratif (direction + téléphone + mains levées, tout en un)
 python3 collaboratif/collaboratif.py
 ```
 
@@ -100,6 +110,72 @@ python STK_input_server_win.py -d
 S'il ne trouve pas `vgamepad`, il ne refuse pas de démarrer : il traduit les
 `STEER:` en appuis modulés sur les flèches. Moins fluide, mais le client n'a pas
 à le savoir.
+
+---
+
+## Téléphone secoué -> turbo
+
+Le téléphone est fixé au-dessus de la chaise. L'app **MultiSense OSC** diffuse
+son accéléromètre par OSC, sur le même port (8000) que le volant du volet
+performance — si le téléphone servait déjà au volant, rien à changer côté
+app.
+
+Ce module démarre et s'arrête tout seul avec `collaboratif.py` : pas de
+troisième terminal.
+
+**L'adresse OSC de l'accéléromètre est une hypothèse à vérifier.** Le volant
+utilise et confirme `/multisense/orientation/pitch` ; par analogie, ce module
+écoute `/multisense/accelerometer/x`, `/y`, `/z`. Si secouer le téléphone ne
+déclenche rien, trouve la bonne adresse avec :
+
+```bash
+python3 collaboratif/telephone.py --decouvrir
+```
+
+puis secoue le téléphone : le terminal affiche chaque adresse OSC reçue.
+Reporte l'adresse correcte dans `ADRESSE_ACCEL_X/Y/Z` de `config_collab.py`.
+
+Réglages dans `config_collab.py` (section « Téléphone secoué ») :
+- `SECOUSSE_SEUIL_DELTA` : variation de l'accélération jugée « brusque » —
+  monter si de simples mouvements de la chaise déclenchent le turbo à tort.
+- `SECOUSSE_PICS_MINIMUM` / `SECOUSSE_FENETRE_S` : il faut ce nombre de
+  variations brusques dans cette fenêtre de temps pour que ce soit une vraie
+  secousse, et pas un unique choc.
+- `SECOUSSE_REPOS_S` : anti-rafale entre deux turbos.
+
+Pour tester le téléphone seul, sans lancer tout `collaboratif.py` :
+
+```bash
+python3 collaboratif/telephone.py --simulation   # affiche les secousses sans rien envoyer
+python3 collaboratif/telephone.py                # envoie NITRO au serveur STK directement
+```
+
+---
+
+## Sauvetage collectif — 6 mains levées
+
+Les 3 joueurs lèvent les deux mains en même temps (6 mains levées au total),
+tenu un court instant -> **RESCUE**. Réutilise la **même webcam** que la
+direction (`mains_levees.py` analyse la même image que `suivi_visages.py`,
+en plus) : pas de deuxième caméra à brancher. Même règle que pour piloter :
+personne ne peut se sauver seul.
+
+Modèle Mediapipe nécessaire (en plus de `face_landmarker.task`) :
+
+| Modèle | Rôle | Lien | Destination |
+|---|---|---|---|
+| `pose_landmarker_lite.task` | Mains levées (Mediapipe Pose) | [Télécharger](https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task) | `models/pose_landmarker_lite.task` |
+
+Réglages dans `config_collab.py` (section « Sauvetage collectif ») :
+- `MAINS_MARGE` : à augmenter si une main à peine levée compte à tort, à
+  diminuer si une main bien levée n'est pas détectée. Se règle en regardant
+  le compteur dans la fenêtre de debug pendant le geste.
+- `MAINS_MAINTIEN_S` : durée pendant laquelle les 6 mains doivent rester
+  levées avant de déclencher — évite qu'un geste furtif (s'étirer, replacer
+  ses cheveux) déclenche un sauvetage.
+- `RESCUE_REPOS_S` : anti-rafale entre deux sauvetages.
+
+---
 
 ---
 
@@ -208,6 +284,8 @@ seuil dessus.
 | `collaboratif.py` | point d'entrée : boucle webcam, calibration, fenêtre de debug |
 | `equipe.py` | qui est qui (zones), et ce que chacun demande au kart |
 | `suivi_visages.py` | Mediapipe multi-visages : position, roulis, expressions |
+| `mains_levees.py` | Mediapipe multi-pose sur la même image : sauvetage collectif (6 mains levées) |
+| `telephone.py` | téléphone secoué (MultiSense OSC) -> turbo ; `--decouvrir` pour trouver l'adresse OSC |
 | `role_milieu.py` | **le rôle du milieu — provisoire, à remplacer** |
 | `modulation.py` | braquage proportionnel sur une touche tout-ou-rien (repli) |
 | `sortie_stk.py` | fusion des sources, arbitrage, envoi des seuls changements |
@@ -229,3 +307,7 @@ seuil dessus.
 | le kart ne tourne pas alors que les deux penchent | c'est la règle : leurs demandes se soustraient |
 | tout est lent, les visages sautent | baisser la résolution dans `config_collab.py` |
 | les touches partent dans le terminal | le focus n'est pas sur le jeu |
+| secouer le téléphone ne fait rien | l'adresse OSC ne correspond pas à l'app installée : `python3 telephone.py --decouvrir` |
+| le turbo part tout seul, sans secousse | `SECOUSSE_SEUIL_DELTA` trop bas, ou `SECOUSSE_PICS_MINIMUM` trop petit |
+| le sauvetage collectif ne se déclenche jamais | `pose_landmarker_lite.task` absent de `models/`, ou les 3 joueurs ne sont pas visibles épaules + poignets compris |
+| le sauvetage se déclenche trop facilement | monter `MAINS_MARGE` et/ou `MAINS_MAINTIEN_S` |

@@ -8,6 +8,7 @@
 La chaine
 ---------
     webcam --> collaboratif.py --UDP:6006--> tools/stk_server_maintien.py --> STK
+    telephone (secoue) --OSC:8000--> telephone.py --------^
 
 La regle
 --------
@@ -18,6 +19,17 @@ La regle
 C'est la PLACE qui decide du sens, pas le cote vers lequel on penche.
 
 Personne ne peut conduire seul, et deux joueurs qui se contredisent s'annulent.
+
+Deux ajouts, independants de la direction
+------------------------------------------
+    telephone secoue (fixe au-dessus de la chaise, MultiSense OSC)
+        -> TURBO. Voir telephone.py -- l'adresse OSC de l'accelerometre est a
+        verifier une fois avec `python3 telephone.py --decouvrir`.
+
+    6 mains levees (les 3 joueurs, 2 mains chacun, en meme temps)
+        -> sauvetage collectif (RESCUE). Voir mains_levees.py -- reutilise la
+        MEME webcam que la direction, pas de camera en plus. Meme regle que
+        pour piloter : personne ne peut se sauver seul.
 
 A DEUX
 ------
@@ -31,9 +43,10 @@ Pendant la partie
     C   recalibrer la position de repos de tout le monde
     Q   quitter (ou Ctrl+C dans le terminal)
 
-La fenetre de debug montre les zones, le role attribue a chacun et l'angle
-mesure. C'est l'outil de reglage : on y lit les chiffres pendant que les
-joueurs font le geste, et on regle ANGLE_MINI dessus.
+La fenetre de debug montre les zones, le role attribue a chacun, l'angle
+mesure, et le compteur de mains levees. C'est l'outil de reglage : on y lit
+les chiffres pendant que les joueurs font le geste, et on regle ANGLE_MINI
+(ou MAINS_MARGE) dessus.
 """
 
 import argparse
@@ -47,7 +60,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config_collab as cfg
 import role_milieu
+import telephone
 from equipe import Equipe, ROLES, GAUCHE, MILIEU, DROITE, role_selon_x
+from mains_levees import MainsLevees
 from modulation import ToucheModulee
 from suivi_visages import SuiviVisages
 
@@ -57,8 +72,8 @@ from sortie_stk import SortieSTK
 COULEURS = {GAUCHE: (80, 200, 80), MILIEU: (80, 200, 255), DROITE: (255, 160, 80)}
 
 
-def dessiner(image, equipe, vus, compte_a_rebours):
-    """La fenetre de reglage : zones, roles, angles."""
+def dessiner(image, equipe, vus, compte_a_rebours, mains, maintenant):
+    """La fenetre de reglage : zones, roles, angles, mains levees."""
     h, l = image.shape[:2]
 
     for x in (cfg.ZONE_GAUCHE_FIN, cfg.ZONE_DROITE_DEBUT):
@@ -110,6 +125,22 @@ def dessiner(image, equipe, vus, compte_a_rebours):
         cv2.putText(image, 'milieu absent (optionnel)', (10, h - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (170, 170, 170), 2)
 
+    # Compteur de mains levees, pour regler MAINS_MARGE et MAINS_MAINTIEN_S en
+    # regardant la barre se remplir pendant le geste.
+    besoin = cfg.MAINS_REQUISES
+    pret = mains.dernier_compte >= besoin
+    couleur_mains = (0, 0, 255) if pret else (255, 255, 255)
+    cv2.putText(image, 'Mains levees: %d/%d  (%d personnes vues)'
+                % (mains.dernier_compte, besoin, mains.dernier_nombre_personnes),
+                (10, h - 45), cv2.FONT_HERSHEY_SIMPLEX, 0.6, couleur_mains, 2)
+    barre_x, barre_y, barre_l, barre_h = 10, h - 35, 200, 12
+    cv2.rectangle(image, (barre_x, barre_y), (barre_x + barre_l, barre_y + barre_h),
+                  (255, 255, 255), 1)
+    remplissage = int(barre_l * mains.progression(maintenant))
+    if remplissage > 0:
+        cv2.rectangle(image, (barre_x, barre_y), (barre_x + remplissage, barre_y + barre_h),
+                      (0, 0, 255), -1)
+
     cv2.imshow('Collaboratif - C recalibrer, Q quitter', image)
 
 
@@ -130,11 +161,18 @@ def main():
         print('Lance PILOTE\\preparer.ps1 une fois.')
         return 1
 
+    if not os.path.exists(cfg.MODELE_POSE):
+        print('Modele de pose introuvable : %s' % cfg.MODELE_POSE)
+        print('Telecharge pose_landmarker_lite.task (voir le README racine)')
+        print('et place-le a cote de face_landmarker.task dans models/.')
+        return 1
+
     sortie = SortieSTK(serveur=cfg.SERVEUR_STK,
                        envoi_reel=not args.simulation,
                        trace=not args.silencieux)
     equipe = Equipe()
     suivi = SuiviVisages()
+    mains = MainsLevees()
 
     print()
     print('=== COLLABORATIF : deux ou trois joueurs, un kart ===')
@@ -147,6 +185,8 @@ def main():
             print('une manette -> python tools\\stk_server_manette.py -d')
         else:
             print('Le serveur doit tourner : python tools\\stk_server_maintien.py -d')
+    print('Telephone secoue (au-dessus de la chaise) -> TURBO.')
+    print('6 mains levees (les 3 joueurs, ensemble) -> sauvetage collectif.')
     print()
 
     try:
@@ -154,6 +194,9 @@ def main():
     except Exception as erreur:
         print('Camera : %s' % erreur)
         return 1
+
+    mains.demarrer()
+    arreter_telephone = telephone.demarrer(sortie)
 
     print('Camera %d ouverte en %dx%d.'
           % (cfg.CAMERA_INDEX, suivi.largeur, suivi.hauteur))
@@ -169,6 +212,7 @@ def main():
     calibre = False
     debut_attente = None
     prochaine_ligne = 0.0
+    compteur_images = 0
 
     # UNE seule touche modulee, pour la direction resultante. Une par joueur
     # ne marcherait pas : leurs cycles seraient dephases, donc quand les deux
@@ -188,6 +232,23 @@ def main():
             vus = equipe.mettre_a_jour(visages)
             maintenant = time.time()
             texte_compte = ''
+
+            # ----------------------------------------------------------------
+            # Sauvetage collectif : meme image, un PoseLandmarker en plus.
+            # Aucun rapport avec la calibration de la direction -- ca marche
+            # meme avant que l'equipe soit calibree, exactement comme il faut
+            # pouvoir se sauver a tout moment de la course.
+            #
+            # Une image sur MAINS_PERIODE_FRAMES seulement : le geste se tient
+            # deja MAINS_MAINTIEN_S avant de declencher, donc le verifier a
+            # chaque image ne sert a rien et coute du temps de calcul a la
+            # direction -- qui, elle, doit rester reactive.
+            # ----------------------------------------------------------------
+            compteur_images += 1
+            if (compteur_images % cfg.MAINS_PERIODE_FRAMES == 0
+                    and mains.traiter(image, maintenant)):
+                sortie.pulse('rescue', cfg.RESCUE_REPOS_S)
+                print('-- SAUVETAGE COLLECTIF (6 mains levees) --')
 
             # ----------------------------------------------------------------
             # Calibration : on attend que les trois soient vus, puis un compte
@@ -284,7 +345,7 @@ def main():
                          texte_milieu))
 
             if fenetre:
-                dessiner(image, equipe, vus, texte_compte)
+                dessiner(image, equipe, vus, texte_compte, mains, maintenant)
                 touche = cv2.waitKey(1) & 0xFF
                 if touche == ord('q'):
                     break
@@ -299,6 +360,8 @@ def main():
     finally:
         role_milieu.relacher(sortie)
         sortie.release_all()
+        arreter_telephone()
+        mains.arreter()
         suivi.arreter()
         if fenetre:
             cv2.destroyAllWindows()

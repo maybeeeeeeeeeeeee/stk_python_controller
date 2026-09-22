@@ -43,6 +43,13 @@ MODELE_VISAGE = _premier_existant(
      os.path.join(RACINE, 'models', 'face_landmarker.task'),
      os.path.join(DOSSIER_PILOTE, 'models', 'face_landmarker.task')])
 
+# Meme logique pour le modele de pose (mains_levees.py, sauvetage collectif) :
+# pas de second exemplaire si le volet performance l'a deja telecharge.
+MODELE_POSE = _premier_existant(
+    [os.path.join(DOSSIER_COLLAB, 'models', 'pose_landmarker_lite.task'),
+     os.path.join(RACINE, 'models', 'pose_landmarker_lite.task'),
+     os.path.join(DOSSIER_PILOTE, 'models', 'pose_landmarker_lite.task')])
+
 SERVEUR_STK = ('localhost', 6006)
 
 # ---------------------------------------------------------------------------
@@ -96,15 +103,24 @@ INVERSER_ROLES = False
 # Braquage PROPORTIONNEL. La fleche ne connait que tout ou rien, donc on la
 # module (voir modulation.py) : peu d'inclinaison = appuis brefs et espaces,
 # beaucoup = appui continu.
-ANGLE_MINI = 6.0            # zone morte : en dessous, le kart ne tourne pas
-ANGLE_MAXI = 26.0           # au-dela, braquage complet (fleche tenue)
-COURBE = 1.6                # > 1 : plus doux pres du centre, pour corriger fin
+ANGLE_MINI = 4.0            # zone morte : en dessous, le kart ne tourne pas -- baisse
+                            # de 6 a 4 pour demarrer le virage sur un tout petit mouvement
+ANGLE_MAXI = 22.0           # au-dela, braquage complet (fleche tenue) -- remonte de 18 a
+                            # 22 : a 18, le moindre tremblement ou petite perte de suivi
+                            # se traduisait en gros pourcentage de braquage (mesure faite
+                            # le 2026-09-22 : des -100%/+100% en rafale alors que personne
+                            # ne braquait vraiment a fond)
+COURBE = 1.4                # > 1 : plus doux pres du centre, pour corriger fin -- baisse
+                            # de 1.6 a 1.4 pour une reaction un peu plus directe
 DELAI_CALIBRATION = 3       # secondes pour retenir la position de repos
 
 # Lissage de l'angle, entre 0 (aucun) et 1 (fige). Une tete bouge tout le temps
 # et Mediapipe rend un angle legerement different a chaque image : sans lissage,
 # l'intensite saute et le braquage devient nerveux.
-LISSAGE = 0.35
+LISSAGE = 0.32              # remonte de 0.25 a 0.32 : la latence venait surtout du repli
+                            # sans vgamepad (regle a part), pas du lissage -- on peut se
+                            # permettre un peu plus de stabilite sans perdre le gain de
+                            # reactivite de la vraie direction analogique
 
 # DIRECTION ANALOGIQUE. True : on envoie une consigne continue (STEER:) a une
 # manette virtuelle, ce qui donne une direction vraiment fluide -- c'est ce que
@@ -149,7 +165,15 @@ EXIGER_LE_BON_SENS = False
 # Au-dela de ce delai sans voir un visage dans une zone, le joueur est declare
 # absent et ses commandes sont relachees. Le suivi tourne vers 15-20 Hz a trois
 # visages : une demi-seconde de trou est franchement anormale.
-TIMEOUT_JOUEUR = 0.5
+#
+# Remonte de 0.5 a 0.8 le 2026-09-22 : a 0.5, une tres breve perte de suivi
+# (la tete qui sort un instant de la zone, un clignement de detection) faisait
+# declarer le joueur absent -- son intensite retombe alors a 0 sans etre
+# annulee par l'autre cote, et le kart partait plein braquage du cote oppose.
+# 0.8 laisse le temps a une perte courte de se resorber sans rien changer a la
+# securite : un joueur qui se leve vraiment reste tout de meme declare absent
+# en moins d'une seconde.
+TIMEOUT_JOUEUR = 0.8
 
 # ---------------------------------------------------------------------------
 # Qui faut-il pour jouer
@@ -188,3 +212,48 @@ MILIEU_REPOS_OBJET = 0.8        # secondes entre deux objets
 # Affichage
 # ---------------------------------------------------------------------------
 PERIODE_ETAT = 0.5
+
+# ---------------------------------------------------------------------------
+# Telephone secoue -> TURBO (MultiSense OSC)
+# ---------------------------------------------------------------------------
+# Le telephone est fixe au-dessus de la chaise. MultiSense OSC diffuse ses
+# capteurs par OSC sur ce port -- le meme que le volant du volet performance
+# (voir PILOTE/steer_module.py), donc pas de reglage cote app a changer si le
+# telephone servait deja au volant.
+TELEPHONE_PORT = 8000
+
+# Adresse OSC de l'accelerometre. Devinee par analogie avec
+# /multisense/orientation/pitch (deja utilisee et confirmee pour le volant) :
+# a VERIFIER sur l'app installee avec `python3 telephone.py --decouvrir`,
+# qui affiche l'adresse exacte des qu'on secoue le telephone.
+ADRESSE_ACCEL_X = b'/multisense/accelerometer/x'
+ADRESSE_ACCEL_Y = b'/multisense/accelerometer/y'
+ADRESSE_ACCEL_Z = b'/multisense/accelerometer/z'
+ADRESSE_ACCEL_XYZ = b'/multisense/accelerometer'   # au cas ou les 3 valeurs arrivent groupees
+
+# Detection de la secousse : on suit la NORME du vecteur acceleration et on
+# compte ses variations brusques ("jerk") plutot qu'un seuil absolu -- ca
+# marche pareil que le telephone soit a plat ou incline sur la chaise, sans
+# calibration de la gravite.
+SECOUSSE_SEUIL_DELTA = 8.0     # variation de norme (m/s^2 ou g, selon l'app) jugee brusque
+SECOUSSE_FENETRE_S = 0.6       # fenetre dans laquelle on compte les variations brusques
+SECOUSSE_PICS_MINIMUM = 3      # il en faut au moins ca dans la fenetre pour que ce soit une VRAIE secousse
+SECOUSSE_REPOS_S = 1.2         # anti-rafale : temps mort apres un turbo declenche
+
+# ---------------------------------------------------------------------------
+# Sauvetage collectif -- 3 joueurs, 6 mains levees (mains_levees.py)
+# ---------------------------------------------------------------------------
+# Reutilise la MEME webcam que suivi_visages.py (pas de deuxieme camera) :
+# les 3 joueurs sont deja dans le champ pour la direction, donc pour le
+# sauvetage aussi. Personne ne peut se sauver seul, meme regle que pour le
+# pilotage.
+MAINS_REQUISES = 3              # au moins 3 mains levees au total (peu importe qui) --
+                                 # baisse de 6 (3 joueurs x 2 mains) car la detection
+                                 # des 6 en meme temps etait peu fiable en pratique
+MAINS_MARGE = 0.03              # le poignet doit depasser l'epaule d'au moins ca (coord. normalisees 0-1)
+MAINS_VISIBILITE_MINI = 0.5     # ignore un point que Mediapipe voit mal (occlusion, hors cadre)
+MAINS_MAINTIEN_S = 0.6          # les 6 mains doivent rester levees ce temps avant de declencher
+RESCUE_REPOS_S = 1.5            # anti-rafale entre deux sauvetages
+MAINS_PERIODE_FRAMES = 3        # ne verifie les mains qu'une image sur N -- libere du temps
+                                 # de calcul pour la direction (critique pour la latence),
+                                 # sans gener le sauvetage qui se tient de toute facon 0,6 s

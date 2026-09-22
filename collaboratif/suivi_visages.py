@@ -107,6 +107,12 @@ class SuiviVisages:
         self.capture = cv2.VideoCapture(cfg.CAMERA_INDEX, cv2.CAP_DSHOW)
         self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.CAMERA_LARGEUR)
         self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.CAMERA_HAUTEUR)
+        # Sans ca, Windows met en file plusieurs images pendant qu'on traite la
+        # precedente : le retard s'accumule au fil du temps au lieu de rester
+        # constant. Un tampon de 1 force la lecture de la derniere image
+        # captee, jamais une plus vieille -- au prix d'une image sautee de
+        # temps en temps plutot que d'un retard qui grandit sans fin.
+        self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if not self.capture.isOpened():
             raise RuntimeError('Impossible d ouvrir la camera %d.' % cfg.CAMERA_INDEX)
 
