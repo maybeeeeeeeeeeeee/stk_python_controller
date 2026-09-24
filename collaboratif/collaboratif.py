@@ -14,7 +14,8 @@ La regle
 --------
     joueur de GAUCHE  : penche la tete -> le kart tourne a gauche
     joueur de DROITE  : penche la tete -> le kart tourne a droite
-    joueur du MILIEU  : accelere (provisoire, voir role_milieu.py)
+    joueur du MILIEU  : fait le geste 6-7 -> accelere (voir six_sept.py)
+                        mains sur la tete -> freine (voir mains_sur_tete.py)
 
 C'est la PLACE qui decide du sens, pas le cote vers lequel on penche.
 
@@ -35,7 +36,8 @@ A DEUX
 ------
 Le milieu est optionnel : la partie demarre des que les deux extremites sont
 la, et il peut arriver ou repartir en cours de route. Sans lui, un secours fait
-avancer le kart -- par defaut, il suffit qu'une des deux extremites sourie.
+avancer le kart -- par defaut, il suffit qu'une des deux extremites fasse le
+geste 6-7.
 Voir ACCELERATION_SANS_MILIEU dans config_collab.py.
 
 Pendant la partie
@@ -63,6 +65,8 @@ import role_milieu
 import telephone
 from equipe import Equipe, ROLES, GAUCHE, MILIEU, DROITE, role_selon_x
 from mains_levees import MainsLevees
+from six_sept import SixSept
+from mains_sur_tete import MainsSurTete
 from modulation import ToucheModulee
 from suivi_visages import SuiviVisages
 
@@ -72,7 +76,8 @@ from sortie_stk import SortieSTK
 COULEURS = {GAUCHE: (80, 200, 80), MILIEU: (80, 200, 255), DROITE: (255, 160, 80)}
 
 
-def dessiner(image, equipe, vus, compte_a_rebours, mains, maintenant):
+def dessiner(image, equipe, vus, compte_a_rebours, mains, sixsept, frein,
+             maintenant):
     """La fenetre de reglage : zones, roles, angles, mains levees."""
     h, l = image.shape[:2]
 
@@ -110,6 +115,21 @@ def dessiner(image, equipe, vus, compte_a_rebours, mains, maintenant):
                               COULEURS[role], -1)
         cv2.putText(image, texte, (x1, max(20, y1 - 10)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, COULEURS[role], 2)
+
+        # Le geste 6-7 : c'est la valeur d qu'on regarde pour regler
+        # SIXSEPT_SEUIL. Elle doit passer nettement de + a - a chaque
+        # balancement des mains.
+        actif = sixsept.actif(role)
+        cv2.putText(image, sixsept.texte(role) + ('  -> ACCELERE' if actif else ''),
+                    (x1, y2 + 42), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (0, 0, 255) if actif else COULEURS[role], 2)
+
+        # Le frein : "tete x.xx" est la distance mains -> tete en largeurs
+        # d'epaules. C'est elle qu'on regarde pour regler FREIN_DISTANCE_TETE.
+        freine = frein.actif(role)
+        cv2.putText(image, frein.texte(role) + ('  -> FREINE' if freine else ''),
+                    (x1, y2 + 64), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (0, 0, 255) if freine else COULEURS[role], 2)
 
     if compte_a_rebours:
         cv2.putText(image, compte_a_rebours, (int(l * 0.3), int(h * 0.55)),
@@ -173,6 +193,8 @@ def main():
     equipe = Equipe()
     suivi = SuiviVisages()
     mains = MainsLevees()
+    sixsept = SixSept()
+    frein = MainsSurTete()
 
     print()
     print('=== COLLABORATIF : deux ou trois joueurs, un kart ===')
@@ -186,7 +208,9 @@ def main():
         else:
             print('Le serveur doit tourner : python tools\\stk_server_maintien.py -d')
     print('Telephone secoue (au-dessus de la chaise) -> TURBO.')
-    print('6 mains levees (les 3 joueurs, ensemble) -> sauvetage collectif.')
+    print('Geste 6-7 (mains en alternance) -> ACCELERER.')
+    print('Mains sur la tete (panique) -> FREINER.')
+    print('Mains levees (les joueurs, ensemble) -> sauvetage collectif.')
     print()
 
     try:
@@ -245,10 +269,16 @@ def main():
             # direction -- qui, elle, doit rester reactive.
             # ----------------------------------------------------------------
             compteur_images += 1
-            if (compteur_images % cfg.MAINS_PERIODE_FRAMES == 0
-                    and mains.traiter(image, maintenant)):
-                sortie.pulse('rescue', cfg.RESCUE_REPOS_S)
-                print('-- SAUVETAGE COLLECTIF (6 mains levees) --')
+            if compteur_images % cfg.MAINS_PERIODE_FRAMES == 0:
+                if mains.traiter(image, maintenant):
+                    sortie.pulse('rescue', cfg.RESCUE_REPOS_S)
+                    print('-- SAUVETAGE COLLECTIF (mains levees) --')
+                # Meme poses, second geste : le 6-7 pour accelerer.
+                sixsept.mettre_a_jour(mains.dernieres_poses, image.shape[1],
+                                      image.shape[0], maintenant)
+                # Et un troisieme : les mains sur la tete pour freiner.
+                frein.mettre_a_jour(mains.dernieres_poses, image.shape[1],
+                                    image.shape[0], maintenant)
 
             # ----------------------------------------------------------------
             # Calibration : on attend que les trois soient vus, puis un compte
@@ -332,7 +362,12 @@ def main():
                         sortie.set_continuous('right', 'equipe',
                                               actif and direction == 'right')
 
-                    texte_milieu = role_milieu.appliquer(equipe, sortie)
+                # Hors du if/else : le milieu doit agir QUELLE QUE SOIT la
+                # direction. Il etait auparavant dans la branche des fleches
+                # seulement -- en direction analogique, le kart n'accelerait
+                # jamais et la ligne d'etat plantait (texte_milieu indefini).
+                texte_milieu = role_milieu.appliquer(equipe, sortie, sixsept,
+                                                    frein)
             else:
                 texte_milieu = '-'
                 net = 0.0
@@ -345,7 +380,8 @@ def main():
                          texte_milieu))
 
             if fenetre:
-                dessiner(image, equipe, vus, texte_compte, mains, maintenant)
+                dessiner(image, equipe, vus, texte_compte, mains, sixsept,
+                         frein, maintenant)
                 touche = cv2.waitKey(1) & 0xFF
                 if touche == ord('q'):
                     break

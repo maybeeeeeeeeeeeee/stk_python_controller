@@ -16,8 +16,8 @@ Mais quelqu'un doit faire avancer le kart, sinon une partie a deux se joue avec
 un kart a l'arret. D'ou le SECOURS, choisi par ACCELERATION_SANS_MILIEU dans
 config_collab.py :
 
-    'sourire_un'        l'une des deux extremites sourit  -> on accelere (defaut)
-    'sourire_les_deux'  il faut que les deux sourient
+    'sixsept_un'        l'une des deux extremites fait le 6-7 -> on accelere (defaut)
+    'sixsept_les_deux'  il faut que les deux fassent le 6-7 ensemble
     'automatique'       le kart avance tout seul, ils ne font que tourner
     'aucune'            personne : le kart n'avance pas a deux
 
@@ -26,7 +26,8 @@ sources nommees differentes, la sortie gere le passage de l'une a l'autre.
 
 Ce que fait le milieu quand il est la
 -------------------------------------
-    sourire maintenu      ->  accelerer
+    geste 6-7 (mains en alternance, voir six_sept.py)  ->  accelerer
+    mains sur la tete, facon panique (mains_sur_tete.py) ->  freiner
     bouche grande ouverte ->  lancer un objet
 
 Quelques pistes, pour quand on en parlera
@@ -48,11 +49,9 @@ NOM = 'milieu'
 SECOURS = 'secours'     # l'acceleration quand le milieu n'est pas la
 
 
-def _secours(equipe):
+def _secours(equipe, sixsept):
     """(accelere, explication) selon le mode choisi. Le milieu est absent."""
     mode = cfg.ACCELERATION_SANS_MILIEU
-    extremites = [equipe.joueurs[GAUCHE], equipe.joueurs[DROITE]]
-    sourires = [j.sourire for j in extremites if j.vu]
 
     if mode == 'automatique':
         return True, 'secours automatique'
@@ -60,26 +59,47 @@ def _secours(equipe):
     if mode == 'aucune':
         return False, 'aucun secours'
 
-    if not sourires:
+    presents = [role for role in (GAUCHE, DROITE) if equipe.joueurs[role].vu]
+    if not presents:
         return False, 'secours : personne de vu'
 
-    seuil = cfg.SEUIL_SOURIRE_EXTREMITE
-    if mode == 'sourire_les_deux':
-        accelere = len(sourires) == 2 and all(s > seuil for s in sourires)
-        detail = 'les deux sourient'
-    else:   # 'sourire_un', le defaut
-        accelere = any(s > seuil for s in sourires)
-        detail = 'un des deux sourit'
+    gestes = [sixsept.actif(role) for role in presents]
+    if mode == 'sixsept_les_deux':
+        accelere = len(gestes) == 2 and all(gestes)
+        detail = 'les deux font le 6-7'
+    else:   # 'sixsept_un', le defaut
+        accelere = any(gestes)
+        detail = 'un des deux fait le 6-7'
 
     return accelere, 'secours (%s) %s' % (
-        detail, '[ACCELERE]' if accelere else ' '.join(
-            '%.2f' % s for s in sourires))
+        detail, '[ACCELERE]' if accelere else
+        ' '.join(sixsept.texte(role) for role in presents))
 
 
-def appliquer(equipe, sortie):
+def _frein_secours(equipe, frein):
+    """(freine, explication) quand le milieu est absent."""
+    mode = cfg.FREIN_SANS_MILIEU
+    if mode == 'aucun':
+        return False, ''
+    presents = [role for role in (GAUCHE, DROITE) if equipe.joueurs[role].vu]
+    gestes = [frein.actif(role) for role in presents]
+    if mode == 'les_deux':
+        freine = len(gestes) == 2 and all(gestes)
+    else:   # 'un', le defaut
+        freine = any(gestes)
+    return freine, ' [FREINE]' if freine else ''
+
+
+def appliquer(equipe, sortie, sixsept, frein):
     """Traduit le milieu -- ou son absence -- en demandes au kart.
 
+    sixsept : l'objet SixSept de six_sept.py, deja mis a jour pour l'image.
+    frein   : l'objet MainsSurTete de mains_sur_tete.py, idem.
     Rend un texte court pour la ligne d'etat.
+
+    Accelerer et freiner en meme temps (par exemple une extremite qui fait le
+    6-7 pendant que l'autre panique) s'annulent dans SortieSTK (OPPOSEES) :
+    le kart roule en roue libre. Meme regle que pour la direction.
     """
     joueur = equipe.joueurs[MILIEU]
 
@@ -87,28 +107,35 @@ def appliquer(equipe, sortie):
         # Absent : on relache ce qu'il tenait, sinon le kart resterait bloque
         # a fond des qu'il sort du champ de la webcam. Puis le secours prend
         # le relais pour que la partie reste jouable a deux.
-        sortie.set_continuous('accelerate', NOM, False)
-        accelere, texte = _secours(equipe)
-        sortie.set_continuous('accelerate', SECOURS, accelere)
-        return 'absent, ' + texte
+        accelere, texte = _secours(equipe, sixsept)
+        freine, texte_frein = _frein_secours(equipe, frein)
+        with sortie.groupe():
+            sortie.set_continuous('accelerate', NOM, False)
+            sortie.set_continuous('brake', NOM, False)
+            sortie.set_continuous('accelerate', SECOURS, accelere)
+            sortie.set_continuous('brake', SECOURS, freine)
+        return 'absent, ' + texte + texte_frein
 
-    # Il est la : le secours n'a plus rien a demander.
-    sortie.set_continuous('accelerate', SECOURS, False)
+    accelere = sixsept.actif(MILIEU)
+    freine = frein.actif(MILIEU)
+    with sortie.groupe():
+        # Il est la : le secours n'a plus rien a demander.
+        sortie.set_continuous('accelerate', SECOURS, False)
+        sortie.set_continuous('brake', SECOURS, False)
+        sortie.set_continuous('accelerate', NOM, accelere)
+        sortie.set_continuous('brake', NOM, freine)
 
-    sourire = joueur.sourire
     bouche = joueur.visage.forme('jawOpen')
-
-    accelere = sourire > cfg.MILIEU_SEUIL_SOURIRE
-    sortie.set_continuous('accelerate', NOM, accelere)
-
     if bouche > cfg.MILIEU_SEUIL_BOUCHE:
         sortie.pulse('fire', cfg.MILIEU_REPOS_OBJET)
 
-    return 'sourire=%.2f%s  bouche=%.2f' % (
-        sourire, ' (ACCELERE)' if accelere else '', bouche)
+    return '%s%s  %s%s  bouche=%.2f' % (
+        sixsept.texte(MILIEU), ' (ACCELERE)' if accelere else '',
+        frein.texte(MILIEU), ' (FREINE)' if freine else '', bouche)
 
 
 def relacher(sortie):
     """A appeler a l'arret du programme."""
-    sortie.set_continuous('accelerate', NOM, False)
-    sortie.set_continuous('accelerate', SECOURS, False)
+    for action in ('accelerate', 'brake'):
+        sortie.set_continuous(action, NOM, False)
+        sortie.set_continuous(action, SECOURS, False)

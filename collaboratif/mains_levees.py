@@ -25,6 +25,7 @@ from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 
 import config_collab as cfg
+from mains_sur_tete import main_pres_de_la_tete
 
 # Topologie BlazePose (33 points), la meme que Mediapipe Pose Landmarker.
 EPAULE_GAUCHE, EPAULE_DROITE = 11, 12
@@ -42,13 +43,21 @@ def _main_levee(poignet, epaule, marge):
     return poignet.y < (epaule.y - marge)
 
 
-def _mains_levees_une_personne(points, marge):
-    """0, 1 ou 2 mains levees pour une personne detectee."""
+def _mains_levees_une_personne(points, marge, largeur, hauteur):
+    """0, 1 ou 2 mains levees pour une personne detectee.
+
+    Une main posee sur la tete est aussi au-dessus de l'epaule, mais c'est le
+    geste du FREIN (mains_sur_tete.py), pas celui du sauvetage : sans cette
+    exclusion, paniquer declencherait un sauvetage. Seuls comptent les bras
+    tendus vers le haut, loin de la tete.
+    """
     n = 0
-    if _main_levee(points[POIGNET_GAUCHE], points[EPAULE_GAUCHE], marge):
-        n += 1
-    if _main_levee(points[POIGNET_DROIT], points[EPAULE_DROITE], marge):
-        n += 1
+    for idx_poignet, idx_epaule in ((POIGNET_GAUCHE, EPAULE_GAUCHE),
+                                    (POIGNET_DROIT, EPAULE_DROITE)):
+        poignet = points[idx_poignet]
+        if (_main_levee(poignet, points[idx_epaule], marge)
+                and not main_pres_de_la_tete(points, poignet, largeur, hauteur)):
+            n += 1
     return n
 
 
@@ -90,6 +99,10 @@ class MainsLevees:
         self._horodatage = 0
         self.dernier_compte = 0
         self.dernier_nombre_personnes = 0
+        # Les poses de la derniere image traitee. six_sept.py les relit pour
+        # reconnaitre le geste d'acceleration : un seul PoseLandmarker pour
+        # les deux gestes, pas de calcul en double.
+        self.dernieres_poses = []
 
     def demarrer(self):
         options = vision.PoseLandmarkerOptions(
@@ -111,7 +124,9 @@ class MainsLevees:
             mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb),
             self._horodatage)
 
-        comptes = [_mains_levees_une_personne(pose, cfg.MAINS_MARGE)
+        self.dernieres_poses = list(resultat.pose_landmarks)
+        h, l = image_bgr.shape[:2]
+        comptes = [_mains_levees_une_personne(pose, cfg.MAINS_MARGE, l, h)
                    for pose in resultat.pose_landmarks]
         total = sum(comptes)
         self.dernier_compte = total
@@ -211,7 +226,8 @@ def main():
                 mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb),
                 mains._horodatage)
 
-            comptes = [_mains_levees_une_personne(pose, cfg.MAINS_MARGE)
+            h, l = image.shape[:2]
+            comptes = [_mains_levees_une_personne(pose, cfg.MAINS_MARGE, l, h)
                        for pose in resultat.pose_landmarks]
             condition = sum(comptes) >= cfg.MAINS_REQUISES
             mains._maintien.observer(condition, maintenant)

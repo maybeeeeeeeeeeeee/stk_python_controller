@@ -11,7 +11,10 @@ coordonnent.
   [GAUCHE] [MILIEU] [DROITE]      les joueurs sur un banc
       |        |        |
    tourne   accélère  tourne
-   à gauche (provisoire) à droite
+   à gauche  (6-7)   à droite
+            freine
+         (mains sur
+          la tête)
 ```
 
 Il réutilise le serveur d'entrée du mode performance
@@ -39,7 +42,7 @@ seul.**
 |---|---|---|
 | **gauche** | pencher la tête → le kart tourne à **gauche** | tourner à droite |
 | **droite** | pencher la tête → le kart tourne à **droite** | tourner à gauche |
-| **milieu** | accélérer en souriant, tirer en ouvrant la bouche | tourner |
+| **milieu** | accélérer en faisant le **geste 6-7**, freiner avec les **mains sur la tête**, tirer en ouvrant la bouche | tourner |
 
 **C'est la place qui décide du sens, pas le geste** : peu importe de quel côté
 la tête est penchée, celui de gauche fait tourner à gauche. Et plus il penche,
@@ -58,8 +61,48 @@ Trois conséquences voulues :
 Le **milieu est optionnel** : la partie démarre dès que les deux extrémités sont
 vues, et il peut arriver ou repartir en cours de route (il est calibré tout seul
 une seconde après son arrivée). Sans lui, un secours fait avancer le kart — par
-défaut il suffit qu'une des deux extrémités sourie
+défaut il suffit qu'une des deux extrémités fasse le geste 6-7
 (`ACCELERATION_SANS_MILIEU` dans `config_collab.py`).
+
+---
+
+## Accélérer : le geste 6-7
+
+Les deux mains devant soi, paumes vers le haut, à hauteur de poitrine, qui
+montent et descendent **en alternance** (le trend « six seven »). Tant que le
+geste continue, le kart accélère ; il s'arrête, le kart lâche l'accélérateur.
+
+Détection dans [`six_sept.py`](six_sept.py), sur les poses que
+`mains_levees.py` calcule déjà (aucun modèle en plus). Pour chaque joueur :
+`d = (hauteur main gauche − hauteur main droite) / largeur d'épaules`. Le 6-7,
+c'est `d` qui bascule de `+SIXSEPT_SEUIL` à `−SIXSEPT_SEUIL` plusieurs fois de
+suite. Lever ou baisser les deux mains **ensemble** ne compte pas, et des mains
+au-dessus des épaules non plus (c'est le sauvetage).
+
+Réglage : dans la fenêtre de debug, `d=` s'affiche sous chaque joueur. Pendant
+le geste il doit passer nettement de + à −, au repos rester proche de 0.
+
+---
+
+## Freiner : les mains sur la tête, façon panique
+
+Le réflexe de quelqu'un qui voit l'accident arriver : les deux mains posées sur
+le crâne ou contre les tempes. Tant qu'elles y restent, le kart freine.
+
+Détection dans [`mains_sur_tete.py`](mains_sur_tete.py), sur les mêmes poses :
+les deux poignets plus hauts que les épaules **et** à moins de
+`FREIN_DISTANCE_TETE` largeurs d'épaules du centre de la tête.
+
+Pour ne pas confondre avec le sauvetage, `mains_levees.py` ne compte plus que
+les bras tendus **loin** de la tête : paniquer ne déclenche jamais de sauvetage.
+
+Sans le milieu, une extrémité peut freiner à sa place (`FREIN_SANS_MILIEU`).
+Si quelqu'un accélère pendant qu'un autre freine, les deux s'annulent et le kart
+roule en roue libre, comme pour la direction.
+
+Réglage : `tete x.xx` s'affiche sous chaque joueur (distance mains → tête, en
+largeurs d'épaules). Mains sur la tête : environ 0,3 à 0,5 ; bras levés :
+au-dessus de 1.
 
 Son rôle définitif **reste à décider** : tout est isolé dans `role_milieu.py`,
 une seule fonction à remplacer, avec quatre pistes listées dans son en-tête.
@@ -284,7 +327,9 @@ seuil dessus.
 | `collaboratif.py` | point d'entrée : boucle webcam, calibration, fenêtre de debug |
 | `equipe.py` | qui est qui (zones), et ce que chacun demande au kart |
 | `suivi_visages.py` | Mediapipe multi-visages : position, roulis, expressions |
-| `mains_levees.py` | Mediapipe multi-pose sur la même image : sauvetage collectif (6 mains levées) |
+| `mains_levees.py` | Mediapipe multi-pose sur la même image : sauvetage collectif (mains levées) |
+| `six_sept.py` | geste 6-7 (mains en alternance) -> accélérer, sur les mêmes poses |
+| `mains_sur_tete.py` | mains sur la tête (panique) -> freiner, sur les mêmes poses |
 | `telephone.py` | téléphone secoué (MultiSense OSC) -> turbo ; `--decouvrir` pour trouver l'adresse OSC |
 | `role_milieu.py` | **le rôle du milieu — provisoire, à remplacer** |
 | `modulation.py` | braquage proportionnel sur une touche tout-ou-rien (repli) |
@@ -299,7 +344,12 @@ seuil dessus.
 | Symptôme | Cause la plus fréquente |
 |---|---|
 | `en attente de : gauche` en boucle | une extrémité est hors zone ou hors champ ; la fenêtre de debug dit laquelle |
-| à deux, le kart ne démarre pas | il faut sourire, ou passer `ACCELERATION_SANS_MILIEU` à `'automatique'` |
+| à deux, le kart ne démarre pas | il faut faire le 6-7, ou passer `ACCELERATION_SANS_MILIEU` à `'automatique'` |
+| le 6-7 n'est pas reconnu | `d=` ne dépasse pas ±`SIXSEPT_SEUIL` : baisser le seuil, ou faire des balancements plus amples ; vérifier que poignets et épaules sont dans le champ |
+| le kart accélère sans le geste | monter `SIXSEPT_SEUIL` ou `SIXSEPT_BASCULES_MINI` |
+| les mains sur la tête ne freinent pas | `tete x.xx` au-dessus de `FREIN_DISTANCE_TETE` : monter le seuil ; ou poignets trop cachés, baisser `FREIN_VISIBILITE_MINI` |
+| des bras levés freinent à tort | baisser `FREIN_DISTANCE_TETE` |
+| la direction est devenue lente | `MAINS_PERIODE_FRAMES` à 2 (et `SIXSEPT_BASCULES_MINI` à 2) |
 | le milieu arrivé en cours reste muet | il se calibre une seconde après son arrivée ; s'il reste `NON CALIBRE`, il est hors zone |
 | l'étiquette de la zone de gauche dit « DROITE » | `INVERSER_ROLES` |
 | pencher la tête ne fait rien | `ANGLE_MINI` trop haut |

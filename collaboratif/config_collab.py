@@ -191,22 +191,59 @@ DELAI_CALIBRATION_TARDIVE = 1.0
 # Qui accelere quand le joueur du milieu n'est pas la ? Sans reponse a cette
 # question, une partie a deux se joue avec un kart a l'arret.
 #
-#   'sourire_un'       l'un des deux suffit                      (defaut)
-#   'sourire_les_deux' il faut que les deux sourient en meme temps
+#   'sixsept_un'       l'un des deux fait le 6-7                  (defaut)
+#   'sixsept_les_deux' il faut que les deux fassent le 6-7 ensemble
 #   'automatique'      le kart avance tout seul, ils ne font que tourner
 #   'aucune'           personne : le kart n'avance pas a deux
-ACCELERATION_SANS_MILIEU = 'sourire_un'
-SEUIL_SOURIRE_EXTREMITE = 0.45
+ACCELERATION_SANS_MILIEU = 'sixsept_un'
 
 # ---------------------------------------------------------------------------
 # Le joueur du milieu -- PROVISOIRE
 # ---------------------------------------------------------------------------
-# Son role reste a decider. En attendant, il fait avancer le kart, sinon rien
-# n'est jouable : deux personnes qui tournent un kart a l'arret, ca ne se teste
-# pas. Tout est regroupe dans role_milieu.py, une seule fonction a remplacer.
-MILIEU_SEUIL_SOURIRE = 0.45     # sourire maintenu -> accelerer
+# Il fait avancer le kart avec le geste "6-7" (voir six_sept.py) et lance un
+# objet en ouvrant grand la bouche. Tout est regroupe dans role_milieu.py.
 MILIEU_SEUIL_BOUCHE = 0.55      # bouche ouverte   -> lancer un objet
 MILIEU_REPOS_OBJET = 0.8        # secondes entre deux objets
+
+# ---------------------------------------------------------------------------
+# Le geste 6-7 -> ACCELERER (six_sept.py)
+# ---------------------------------------------------------------------------
+# Les deux mains paumes vers le haut, qui montent et descendent en alternance.
+# On mesure d = (hauteur main gauche - hauteur main droite) / largeur
+# d'epaules, et on compte combien de fois d bascule d'un cote a l'autre.
+#
+# A regler en regardant "d=" sous chaque joueur dans la fenetre de debug :
+# pendant le geste, d doit depasser nettement +SEUIL puis -SEUIL a chaque
+# balancement. Au repos, mains immobiles, il doit rester entre les deux.
+SIXSEPT_SEUIL = 0.15            # amplitude a franchir de chaque cote -- monter si
+                                 # une main qui bouge un peu suffit a accelerer,
+                                 # baisser si un vrai 6-7 n'est pas reconnu
+SIXSEPT_FENETRE_S = 1.5         # fenetre dans laquelle on compte les bascules
+SIXSEPT_BASCULES_MINI = 3       # bascules necessaires dans la fenetre pour que ce
+                                 # soit le geste (3 = un aller-retour et demi)
+SIXSEPT_MAINTIEN_S = 0.6        # sans nouvelle bascule depuis ce delai, on arrete
+                                 # d'accelerer : le kart lache des que le geste s'arrete
+
+# ---------------------------------------------------------------------------
+# Les mains sur la tete, facon panique -> FREINER (mains_sur_tete.py)
+# ---------------------------------------------------------------------------
+# Les deux poignets au-dessus des epaules ET pres du centre de la tete.
+# A regler en regardant "tete x.xx" sous chaque joueur dans la fenetre de
+# debug : c'est la distance de la main la plus eloignee, en largeurs
+# d'epaules. Mains sur la tete -> petite valeur ; bras leves -> grande.
+FREIN_DISTANCE_TETE = 0.9       # monter si des mains bien posees ne freinent pas,
+                                 # baisser si des bras leves freinent a tort
+FREIN_VISIBILITE_MINI = 0.3     # plus tolerant que MAINS_VISIBILITE_MINI : une main sur
+                                 # la tete est souvent a moitie cachee
+FREIN_MAINTIEN_S = 0.15         # le geste doit tenir ce temps avant de freiner --
+                                 # court, un frein doit etre reactif
+FREIN_TOLERANCE_S = 0.25        # une image ratee ne relache pas le frein
+
+# Qui freine quand le joueur du milieu n'est pas la ?
+#   'un'        l'une des deux extremites met les mains sur la tete   (defaut)
+#   'les_deux'  il faut que les deux paniquent ensemble
+#   'aucun'     pas de frein a deux
+FREIN_SANS_MILIEU = 'un'
 
 # ---------------------------------------------------------------------------
 # Affichage
@@ -254,6 +291,7 @@ MAINS_MARGE = 0.03              # le poignet doit depasser l'epaule d'au moins c
 MAINS_VISIBILITE_MINI = 0.5     # ignore un point que Mediapipe voit mal (occlusion, hors cadre)
 MAINS_MAINTIEN_S = 0.6          # les 6 mains doivent rester levees ce temps avant de declencher
 RESCUE_REPOS_S = 1.5            # anti-rafale entre deux sauvetages
-MAINS_PERIODE_FRAMES = 3        # ne verifie les mains qu'une image sur N -- libere du temps
-                                 # de calcul pour la direction (critique pour la latence),
-                                 # sans gener le sauvetage qui se tient de toute facon 0,6 s
+MAINS_PERIODE_FRAMES = 1        # analyse de pose une image sur N. Passe de 3 a 1 pour le
+                                 # geste 6-7 : un balancement dure ~0,2 s, et a une image sur
+                                 # trois (5-7 analyses/s) on rate des bascules. Si la direction
+                                 # devient trop lente, essayer 2 et baisser SIXSEPT_BASCULES_MINI
